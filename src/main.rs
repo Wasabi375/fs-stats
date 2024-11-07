@@ -5,22 +5,39 @@ use std::{
     fs::{read_dir, DirEntry},
     io::Stdout,
     os::linux::fs::MetadataExt,
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 use anyhow::{ensure, Context, Result};
+use clap::Parser;
 use histogram::Histogram;
 use terminal::{stdout, Action, Clear, Retrieved, Terminal, Value};
 
-fn visit_entries<F, D>(path: &Path, mut file_visitor: F, mut dir_visitor: D) -> Result<u64>
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+pub struct Arguments {
+    pub exlude: Vec<PathBuf>,
+}
+
+fn visit_entries<F, D>(
+    path: &Path,
+    mut file_visitor: F,
+    mut dir_visitor: D,
+    exclude: &[PathBuf],
+) -> Result<u64>
 where
     F: FnMut(&DirEntry),
     D: FnMut(&DirEntry),
 {
-    return visit_entries_2(path, &mut file_visitor, &mut dir_visitor);
+    return visit_entries_2(path, &mut file_visitor, &mut dir_visitor, exclude);
 }
 
-fn visit_entries_2<F, D>(path: &Path, file_visitor: &mut F, dir_visitor: &mut D) -> Result<u64>
+fn visit_entries_2<F, D>(
+    path: &Path,
+    file_visitor: &mut F,
+    dir_visitor: &mut D,
+    exclude: &[PathBuf],
+) -> Result<u64>
 where
     F: FnMut(&DirEntry),
     D: FnMut(&DirEntry),
@@ -43,7 +60,10 @@ where
             .is_dir()
         {
             dir_visitor(&entry);
-            match visit_entries_2(&entry.path(), file_visitor, dir_visitor)
+            if exclude.iter().any(|exclude| exclude == &entry.path()) {
+                continue;
+            }
+            match visit_entries_2(&entry.path(), file_visitor, dir_visitor, exclude)
                 .with_context(|| format!("visit {}", entry.file_name().to_string_lossy()))
             {
                 Ok(inner_err_count) => {
@@ -105,6 +125,12 @@ fn print_info(terminal: &Terminal<Stdout>, path: &Path, files: &FileStats, dicts
 }
 
 fn main() {
+    let mut args = Arguments::parse();
+
+    for excluded in args.exlude.iter_mut() {
+        *excluded = excluded.canonicalize().unwrap();
+    }
+
     let terminal = stdout();
     let dirs = RefCell::new(DictStats {
         count: 0,
@@ -166,6 +192,7 @@ fn main() {
                 dicts.access_errors += 1;
             }
         },
+        &args.exlude,
     )
     .unwrap();
 
