@@ -69,6 +69,7 @@ struct DictStats {
     dirs: Histogram,
     files: Histogram,
     entries: Histogram,
+    access_errors: u64,
 }
 
 struct FileStats {
@@ -76,6 +77,7 @@ struct FileStats {
     block_count: Histogram,
     block_size: Histogram,
     size: Histogram,
+    access_errors: u64,
 }
 
 fn clear_info(terminal: &Terminal<Stdout>) {
@@ -106,9 +108,10 @@ fn main() {
     let terminal = stdout();
     let dirs = RefCell::new(DictStats {
         count: 0,
-        dirs: Histogram::new(4, 14).unwrap(),
-        files: Histogram::new(4, 14).unwrap(),
-        entries: Histogram::new(4, 14).unwrap(),
+        dirs: Histogram::new(4, 32).unwrap(),
+        files: Histogram::new(4, 32).unwrap(),
+        entries: Histogram::new(4, 32).unwrap(),
+        access_errors: 0,
     });
 
     let files = RefCell::new(FileStats {
@@ -116,6 +119,7 @@ fn main() {
         block_count: Histogram::new(4, 44).unwrap(),
         block_size: Histogram::new(4, 32).unwrap(),
         size: Histogram::new(4, 44).unwrap(),
+        access_errors: 0,
     });
 
     let pwd = current_dir().unwrap();
@@ -126,13 +130,15 @@ fn main() {
         |entry: &DirEntry| {
             print_info(&terminal, &entry.path(), &files.borrow(), &dirs.borrow());
 
-            let stats = std::fs::metadata(&entry.path()).unwrap();
             let mut files = files.borrow_mut();
-
             files.count += 1;
-            files.size.add(stats.len(), 1).unwrap();
-            files.block_size.add(stats.st_blksize(), 1).unwrap();
-            files.block_count.add(stats.st_blocks(), 1).unwrap();
+            if let Ok(stats) = std::fs::metadata(&entry.path()) {
+                files.size.add(stats.len(), 1).unwrap();
+                files.block_size.add(stats.st_blksize(), 1).unwrap();
+                files.block_count.add(stats.st_blocks(), 1).unwrap();
+            } else {
+                files.access_errors += 1;
+            }
         },
         |entry: &DirEntry| {
             print_info(&terminal, &entry.path(), &files.borrow(), &dirs.borrow());
@@ -140,21 +146,25 @@ fn main() {
             let mut dicts = dirs.borrow_mut();
             dicts.count += 1;
 
-            let mut dir_count = 0;
-            let mut file_count = 0;
-            for entry in read_dir(&entry.path()).unwrap() {
-                if let Ok(entry) = entry {
-                    if entry.file_type().unwrap().is_dir() {
-                        dir_count += 1;
-                    }
-                    if entry.file_type().unwrap().is_file() {
-                        file_count += 1;
+            if let Ok(dir_iter) = read_dir(&entry.path()) {
+                let mut dir_count = 0;
+                let mut file_count = 0;
+                for entry in dir_iter {
+                    if let Ok(entry) = entry {
+                        if entry.file_type().unwrap().is_dir() {
+                            dir_count += 1;
+                        }
+                        if entry.file_type().unwrap().is_file() {
+                            file_count += 1;
+                        }
                     }
                 }
+                dicts.files.add(file_count, 1).unwrap();
+                dicts.dirs.add(dir_count, 1).unwrap();
+                dicts.entries.add(file_count + dir_count, 1).unwrap();
+            } else {
+                dicts.access_errors += 1;
             }
-            dicts.files.add(file_count, 1).unwrap();
-            dicts.dirs.add(dir_count, 1).unwrap();
-            dicts.entries.add(file_count + dir_count, 1).unwrap();
         },
     )
     .unwrap();
@@ -168,7 +178,11 @@ fn main() {
 
     println!("Done");
     println!("Total Files: {}", dirs.count + files.count);
-    println!("Files: {}, Dicts: {}", files.count, dirs.count);
+    println!("Files: {}, Dirs: {}", files.count, dirs.count);
+    println!(
+        "Errors: Files: {}, Dirs: {}",
+        files.access_errors, dirs.access_errors
+    );
 
     println!();
 
